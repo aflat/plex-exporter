@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+	systemctl daemon-reload >/dev/null || true
+fi
+
+if [ "$1" = "purge" ]; then
+	rm -rf /etc/plex-exporter
+	if getent passwd plex-exporter >/dev/null; then
+		deluser --system plex-exporter >/dev/null || true
+	fi
+fi
+
+exit 0

@@ -1,0 +1,22 @@
+[Unit]
+Description=Prometheus exporter for Plex Media Server
+Documentation=https://github.com/aflat/plex-exporter
+Wants=network-online.target
+After=network-online.target plexmediaserver.service
+# Not started until the config exists; see plex-exporter.conf.example.
+ConditionPathExists=/etc/plex-exporter/plex-exporter.conf
+
+[Service]
+Type=simple
+User=plex-exporter
+Group=plex-exporter
+EnvironmentFile=/etc/plex-exporter/plex-exporter.conf
+ExecStart=/usr/bin/plex-exporter
+Restart=on-failure
+RestartSec=10s
+# Mount-namespace sandboxing (ProtectSystem, PrivateTmp, ...) is left out on
+# purpose: it fails with status=226/NAMESPACE in Proxmox LXCs without nesting.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

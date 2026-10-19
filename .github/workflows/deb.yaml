@@ -1,0 +1,68 @@
+# Fork-only workflow: builds .deb packages (binary + systemd unit) for
+# installing on a plain Debian/Ubuntu host or LXC. Not synced from cplieger/ci.
+#
+# Push a tag like deb-v4.4.0 to publish a GitHub release with the packages.
+# Run it by hand (Actions -> Debian package -> Run workflow) to only build
+# them as a workflow artifact.
+name: Debian package
+
+on:
+  push:
+    tags: ["deb-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build package
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            version="${GITHUB_REF_NAME#deb-v}"
+          else
+            version="0.0.0~git$(date -u +%Y%m%d).$(git rev-parse --short HEAD)"
+          fi
+          sh packaging/build-deb.sh "$version" "${{ matrix.arch }}"
+          # Stable name so releases/latest/download/<name> always works.
+          cp dist/plex-exporter_*_"${{ matrix.arch }}".deb \
+            "dist/plex-exporter_linux_${{ matrix.arch }}.deb"
+          dpkg-deb --info "dist/plex-exporter_linux_${{ matrix.arch }}.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: dist/*.deb
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.deb \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Install: apt install ./plex-exporter_linux_amd64.deb"

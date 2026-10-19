@@ -1,0 +1,43 @@
+#!/bin/sh
+set -e
+
+conf=/etc/plex-exporter/plex-exporter.conf
+
+if [ "$1" = "configure" ]; then
+	if ! getent passwd plex-exporter >/dev/null; then
+		adduser --system --group --no-create-home --home /nonexistent \
+			--shell /usr/sbin/nologin plex-exporter >/dev/null
+	fi
+
+	# The config holds the Plex token: readable by root and the service only.
+	chown root:plex-exporter /etc/plex-exporter
+	chmod 750 /etc/plex-exporter
+	for f in "$conf" /etc/plex-exporter/token; do
+		if [ -f "$f" ]; then
+			chown root:plex-exporter "$f"
+			chmod 640 "$f"
+		fi
+	done
+
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload >/dev/null || true
+		systemctl enable plex-exporter.service >/dev/null || true
+		if [ -f "$conf" ]; then
+			systemctl restart plex-exporter.service || true
+		else
+			cat <<EOF
+
+plex-exporter is installed but not started: $conf does not exist yet.
+Create it from the example, set PLEX_URL and PLEX_TOKEN, then start it:
+
+  cp $conf.example $conf
+  chown root:plex-exporter $conf && chmod 640 $conf
+  editor $conf
+  systemctl start plex-exporter
+
+EOF
+		fi
+	fi
+fi
+
+exit 0

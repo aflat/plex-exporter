@@ -1,0 +1,29 @@
+# plex-exporter configuration, read by the plex-exporter systemd service.
+#
+# Copy this file to /etc/plex-exporter/plex-exporter.conf, fill in the
+# required values, then start the service:
+#
+#   cp /etc/plex-exporter/plex-exporter.conf.example /etc/plex-exporter/plex-exporter.conf
+#   chown root:plex-exporter /etc/plex-exporter/plex-exporter.conf
+#   chmod 640 /etc/plex-exporter/plex-exporter.conf
+#   systemctl restart plex-exporter
+#
+# Format is KEY=value, one per line, no spaces around "=" and no quotes needed.
+
+# Required. Your Plex server's address with scheme and port. Use localhost
+# when the exporter runs on the same host or LXC as Plex.
+PLEX_URL=http://localhost:32400
+
+# Required. The admin token of your Plex server.
+PLEX_TOKEN=your-plex-token
+
+# Optional. Read the token from this file instead of PLEX_TOKEN. Takes
+# precedence over PLEX_TOKEN. The file must be readable by the plex-exporter user.
+#PLEX_TOKEN_FILE=/etc/plex-exporter/token
+
+# Optional. Address and port for /metrics and /api/health (default :9594).
+#LISTEN_ADDR=:9594
+
+# Optional. PEM file of the CA that signed your Plex certificate, for an
+# https:// PLEX_URL with a self-signed or private certificate.
+#PLEX_CA_CERT_PATH=/etc/plex-exporter/plex-ca.pem

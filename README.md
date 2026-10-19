@@ -71,6 +71,48 @@ Run `docker logs plex-exporter`. You should see `connected to plex server` with 
 
 On Unraid, open the **Apps** tab, search for plex-exporter and click **Install**.
 
+## Installing as a Debian package
+
+For a Debian or Ubuntu host without Docker, such as the Proxmox LXC that runs Plex, each `deb-v*` release of this fork ships a `.deb` with the binary and a systemd service, for `amd64` and `arm64`.
+
+1. Install the package. Use `arm64` in place of `amd64` on an ARM host.
+
+   ```sh
+   wget https://github.com/aflat/plex-exporter/releases/latest/download/plex-exporter_linux_amd64.deb
+   apt install ./plex-exporter_linux_amd64.deb
+   ```
+
+   This creates a `plex-exporter` system user and enables the service, but does not start it until a config file exists.
+2. Create the config file from the example the package installs, and lock it down, because it holds your token.
+
+   ```sh
+   cp /etc/plex-exporter/plex-exporter.conf.example /etc/plex-exporter/plex-exporter.conf
+   chown root:plex-exporter /etc/plex-exporter/plex-exporter.conf
+   chmod 640 /etc/plex-exporter/plex-exporter.conf
+   ```
+
+3. Edit `/etc/plex-exporter/plex-exporter.conf` and set the two required values. When the exporter runs on the same host as Plex, keep `PLEX_URL=http://localhost:32400`.
+
+   ```text
+   PLEX_URL=http://localhost:32400
+   PLEX_TOKEN=your-plex-token
+   ```
+
+   The file takes every variable in the [configuration reference](#configuration-reference), one `KEY=value` per line. The example file lists them all, commented out.
+4. Start the service and check it connected.
+
+   ```sh
+   systemctl start plex-exporter
+   journalctl -u plex-exporter -n 20
+   ```
+
+   You should see `connected to plex server`. If `systemctl status plex-exporter` says the start condition was not met, the config file is missing.
+5. Point a Prometheus scrape job at the host's address on port `9594`, as in the quick start above.
+
+After changing the config, run `systemctl restart plex-exporter`. To upgrade, download the new `.deb` and run `apt install` again. Your config is kept and the service restarts. `apt remove plex-exporter` stops and removes the service and keeps the config, and `apt purge plex-exporter` also deletes `/etc/plex-exporter` and the user.
+
+To build the package yourself, run `packaging/build-deb.sh <version> <amd64|arm64>` with Go and `dpkg-deb` installed. It writes the `.deb` to `dist/`.
+
 ## Adding the Grafana dashboard
 
 The repository ships [`grafana-dashboard.json`](grafana-dashboard.json), the Plex Exporter dashboard built on these metrics. It needs Grafana 13.2 or newer.

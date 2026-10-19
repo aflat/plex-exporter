@@ -3,6 +3,9 @@
 **/.judgement/
 **/.steering-maintenance/
 
+# Debian package build output
+dist/
+
 # Go workspace
 go.work
 go.work.sum
