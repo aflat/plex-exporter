@@ -20,21 +20,21 @@ cd "$root"
 mkdir -p dist
 
 CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-	go build -trimpath -ldflags="-s -w" -o "$pkg/usr/bin/plex-exporter" .
+  go build -trimpath -ldflags="-s -w" -o "$pkg/usr/bin/plex-exporter" .
 
 install -D -m 644 packaging/debian/plex-exporter.service \
-	"$pkg/lib/systemd/system/plex-exporter.service"
+  "$pkg/lib/systemd/system/plex-exporter.service"
 install -d -m 750 "$pkg/etc/plex-exporter"
 install -m 644 packaging/debian/plex-exporter.conf.example \
-	"$pkg/etc/plex-exporter/plex-exporter.conf.example"
+  "$pkg/etc/plex-exporter/plex-exporter.conf.example"
 install -D -m 644 LICENSE "$pkg/usr/share/doc/plex-exporter/copyright"
 install -D -m 644 NOTICE "$pkg/usr/share/doc/plex-exporter/NOTICE"
 install -D -m 644 THIRD_PARTY_NOTICES.md \
-	"$pkg/usr/share/doc/plex-exporter/THIRD_PARTY_NOTICES.md"
+  "$pkg/usr/share/doc/plex-exporter/THIRD_PARTY_NOTICES.md"
 
 install -d "$pkg/DEBIAN"
 for script in postinst prerm postrm; do
-	install -m 755 "packaging/debian/$script" "$pkg/DEBIAN/$script"
+  install -m 755 "packaging/debian/$script" "$pkg/DEBIAN/$script"
 done
 echo /etc/plex-exporter/plex-exporter.conf.example >"$pkg/DEBIAN/conffiles"
 
