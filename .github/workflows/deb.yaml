@@ -2,12 +2,13 @@
 # installing on a plain Debian/Ubuntu host or LXC. Not synced from cplieger/ci.
 #
 # Push a tag like deb-v4.4.0 to publish a GitHub release with the packages.
-# Run it by hand (Actions -> Debian package -> Run workflow) to only build
-# them as a workflow artifact.
+# Every push to main, and a manual run (Actions -> Debian package -> Run
+# workflow), only builds them as a workflow artifact.
 name: Debian package
 
 on:
   push:
+    branches: [main]
     tags: ["deb-v*"]
   workflow_dispatch:
 
