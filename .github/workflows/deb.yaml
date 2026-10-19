@@ -1,22 +1,65 @@
 # Fork-only workflow: builds .deb packages (binary + systemd unit) for
 # installing on a plain Debian/Ubuntu host or LXC. Not synced from cplieger/ci.
 #
-# Push a tag like deb-v4.4.0 to publish a GitHub release with the packages.
-# Every push to main, and a manual run (Actions -> Debian package -> Run
-# workflow), only builds them as a workflow artifact.
+# Every push to main builds the packages as a workflow artifact. To publish a
+# versioned GitHub release (deb-v<version>) with them attached, run it by hand
+# on main: Actions -> Debian package -> Run workflow, with "Publish a release"
+# ticked. The version is the newest upstream stable tag on main plus this
+# workflow's run number as the Debian revision, such as 4.4.0-12, so apt
+# orders successive builds correctly.
+#
+# To release packages an earlier main run already built, without rebuilding,
+# also fill in "Run ID": the number at the end of that run's URL. The release
+# keeps the version and commit that run built.
 name: Debian package
 
 on:
   push:
     branches: [main]
-    tags: ["deb-v*"]
   workflow_dispatch:
+    inputs:
+      release:
+        description: Publish a release (main only)
+        type: boolean
+        default: true
+      run_id:
+        description: Run ID of an earlier main build to release instead of building (optional)
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
+# Queue rather than cancel, so a requested release is never dropped.
+concurrency:
+  group: deb-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  version:
+    if: inputs.run_id == ''
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Full history and tags, for git describe.
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' 2>/dev/null || echo v0.0.0)"
+          version="${base#v}-${RUN_NUMBER}"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "Package version: $version"
+
   build:
+    needs: version
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -35,15 +78,11 @@ jobs:
       - name: Build package
         env:
           ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then
-            version="${GITHUB_REF_NAME#deb-v}"
-          else
-            version="0.0.0~git$(date -u +%Y%m%d).$(git rev-parse --short HEAD)"
-          fi
-          sh packaging/build-deb.sh "$version" "$ARCH"
+          sh packaging/build-deb.sh "$VERSION" "$ARCH"
           # Stable name so releases/latest/download/<name> always works.
-          cp dist/plex-exporter_*_"$ARCH".deb "dist/plex-exporter_linux_$ARCH.deb"
+          cp "dist/plex-exporter_${VERSION}_$ARCH.deb" "dist/plex-exporter_linux_$ARCH.deb"
           dpkg-deb --info "dist/plex-exporter_linux_$ARCH.deb"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -52,23 +91,65 @@ jobs:
           path: dist/*.deb
 
   release:
-    if: github.ref_type == 'tag'
-    needs: build
+    # always(): with a run ID, version and build are skipped on purpose.
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' && inputs.release &&
+      github.ref == 'refs/heads/main' &&
+      (inputs.run_id != '' || needs.build.result == 'success')
+    needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
+      # actions: read lets download-artifact fetch from another run.
+      actions: read
       contents: write
     steps:
+      - name: Check the earlier run
+        if: inputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          read -r workflow branch conclusion sha <<EOF
+          $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+            --jq '[.path, .head_branch, .conclusion, .head_sha] | @tsv')
+          EOF
+          if [ "$workflow" != .github/workflows/deb.yaml ] || [ "$branch" != main ] ||
+            [ "$conclusion" != success ]; then
+            echo "::error::Run $RUN_ID is not a successful Debian package run on main" \
+              "(workflow $workflow, branch $branch, result $conclusion)."
+            exit 1
+          fi
+          echo "TARGET_SHA=$sha" >>"$GITHUB_ENV"
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: deb-*
           merge-multiple: true
           path: dist
+          run-id: ${{ inputs.run_id || github.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.deb \
+          # The version comes from the package itself, so a re-released run
+          # keeps the version it was built with.
+          version="$(dpkg-deb --field dist/plex-exporter_linux_amd64.deb Version)"
+          target="${TARGET_SHA:-$GITHUB_SHA}"
+          tag="deb-v$version"
+          cat >notes.md <<EOF
+          plex-exporter $version as a Debian package, built from ${target}.
+
+          Install or upgrade (use arm64 on an ARM host):
+
+          \`\`\`sh
+          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag/plex-exporter_linux_amd64.deb
+          apt install ./plex-exporter_linux_amd64.deb
+          \`\`\`
+          EOF
+          gh release create "$tag" dist/*.deb \
             --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --notes "Install: apt install ./plex-exporter_linux_amd64.deb"
+            --target "$target" \
+            --title "plex-exporter $version" \
+            --notes-file notes.md
