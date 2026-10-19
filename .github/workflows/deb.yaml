@@ -1,16 +1,20 @@
 # Fork-only workflow: builds .deb packages (binary + systemd unit) for
 # installing on a plain Debian/Ubuntu host or LXC. Not synced from cplieger/ci.
 #
-# Every push to main builds the packages as a workflow artifact. To publish a
-# versioned GitHub release (deb-v<version>) with them attached, run it by hand
-# on main: Actions -> Debian package -> Run workflow, with "Publish a release"
-# ticked. The version is the newest upstream stable tag on main plus this
-# workflow's run number as the Debian revision, such as 4.4.0-12, so apt
-# orders successive builds correctly.
+# Every push to main builds the packages as a workflow artifact. Releases are
+# manual: Actions -> Debian package -> Run workflow on main, then choose:
 #
-# To release packages an earlier main run already built, without rebuilding,
-# also fill in "Run ID": the number at the end of that run's URL. The release
-# keeps the version and commit that run built.
+#   Release the last build  publish the newest successful build's packages
+#                           as they are, without rebuilding (the default)
+#   Build and release       build fresh from main, then publish
+#   Build only              build an artifact, publish nothing (any branch)
+#
+# "Run ID" overrides the choice and releases that earlier run's packages.
+#
+# The version is the newest upstream stable tag on main plus this workflow's
+# run number as the Debian revision, such as 4.4.0-12, so apt orders
+# successive builds correctly. A released build keeps the version and commit
+# it was built with.
 name: Debian package
 
 on:
@@ -18,12 +22,16 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      release:
-        description: Publish a release (main only)
-        type: boolean
-        default: true
+      action:
+        description: What to do
+        type: choice
+        options:
+          - Release the last build
+          - Build and release
+          - Build only
+        default: Release the last build
       run_id:
-        description: Run ID of an earlier main build to release instead of building (optional)
+        description: Or release this earlier run's build instead (run ID from its URL, optional)
         type: string
         default: ""
 
@@ -36,8 +44,62 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Decides whether this run builds, releases, or both, and for a release of
+  # an earlier build, which run's packages to publish.
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      release: ${{ steps.plan.outputs.release }}
+      run_id: ${{ steps.plan.outputs.run_id }}
+    steps:
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ inputs.action }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          build=true release=false run_id=
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ -n "$RUN_ID" ]; then
+              build=false release=true run_id="$RUN_ID"
+            elif [ "$ACTION" = "Release the last build" ]; then
+              build=false release=true
+              # Newest successful run on main whose packages have not expired.
+              for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deb.yaml/runs?branch=main&status=success&per_page=30" \
+                --jq '.workflow_runs[].id'); do
+                found="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" \
+                  --jq '[.artifacts[] | select(.name == "deb-amd64" and (.expired | not))] | length')"
+                if [ "$found" -gt 0 ]; then
+                  run_id="$id"
+                  break
+                fi
+              done
+              if [ -z "$run_id" ]; then
+                echo "::error::No earlier build with packages found on main. Choose \"Build and release\"."
+                exit 1
+              fi
+            elif [ "$ACTION" = "Build and release" ]; then
+              release=true
+            fi
+          fi
+          if [ "$release" = true ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Releases are published from main only. Run the workflow on main."
+            exit 1
+          fi
+          {
+            echo "build=$build"
+            echo "release=$release"
+            echo "run_id=$run_id"
+          } >>"$GITHUB_OUTPUT"
+          echo "build=$build release=$release run_id=${run_id:-this run}"
+
   version:
-    if: inputs.run_id == ''
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -91,12 +153,12 @@ jobs:
           path: dist/*.deb
 
   release:
-    # always(): with a run ID, version and build are skipped on purpose.
+    # always(): when releasing an earlier build, version and build are
+    # skipped on purpose.
     if: >-
-      always() && github.event_name == 'workflow_dispatch' && inputs.release &&
-      github.ref == 'refs/heads/main' &&
-      (inputs.run_id != '' || needs.build.result == 'success')
-    needs: [version, build]
+      always() && needs.plan.result == 'success' && needs.plan.outputs.release == 'true' &&
+      (needs.plan.outputs.run_id != '' || needs.build.result == 'success')
+    needs: [plan, build]
     runs-on: ubuntu-latest
     permissions:
       # actions: read lets download-artifact fetch from another run.
@@ -104,10 +166,10 @@ jobs:
       contents: write
     steps:
       - name: Check the earlier run
-        if: inputs.run_id != ''
+        if: needs.plan.outputs.run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.run_id }}
+          RUN_ID: ${{ needs.plan.outputs.run_id }}
         run: |
           read -r workflow branch conclusion sha <<EOF
           $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
@@ -119,6 +181,7 @@ jobs:
               "(workflow $workflow, branch $branch, result $conclusion)."
             exit 1
           fi
+          echo "Releasing the build from run $RUN_ID (commit $sha)"
           echo "TARGET_SHA=$sha" >>"$GITHUB_ENV"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -126,18 +189,22 @@ jobs:
           pattern: deb-*
           merge-multiple: true
           path: dist
-          run-id: ${{ inputs.run_id || github.run_id }}
+          run-id: ${{ needs.plan.outputs.run_id || github.run_id }}
           github-token: ${{ github.token }}
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The version comes from the package itself, so a re-released run
-          # keeps the version it was built with.
+          # The version comes from the package itself, so a released earlier
+          # build keeps the version it was built with.
           version="$(dpkg-deb --field dist/plex-exporter_linux_amd64.deb Version)"
           target="${TARGET_SHA:-$GITHUB_SHA}"
           tag="deb-v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$tag is already released. Push a change to main or choose \"Build and release\"."
+            exit 1
+          fi
           cat >notes.md <<EOF
           plex-exporter $version as a Debian package, built from ${target}.
 
